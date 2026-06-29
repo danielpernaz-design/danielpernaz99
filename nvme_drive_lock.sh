@@ -40,7 +40,10 @@ encrypt_drive() {
     if [[ "$LOCK_ENABLED" != "Y" ]]; then
         echo ""
         echo "=== [ENCRYPT] Step 1: Initial setup on $DEVICE ==="
-        sedutil-cli -n --initialsetup "test" "$DEVICE"
+        if ! sedutil-cli -n --initialsetup "test" "$DEVICE" 2>&1; then
+            echo "Initial setup failed (SID already set to 'test') — activating Locking SP..."
+            sedutil-cli -n --activateLockingSP "test" "$DEVICE"
+        fi
     else
         echo ""
         echo "=== [ENCRYPT] Step 1: Drive already initialized — skipping initial setup ==="
