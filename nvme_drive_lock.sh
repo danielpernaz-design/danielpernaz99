@@ -87,7 +87,7 @@ decrypt_drive() {
     echo ""
     echo "=== [DECRYPT] Step 2: Disable locking range ==="
     sedutil-cli -n --disablelockingrange 0 "test" "$DEVICE"
-    sedutil-cli --revertnoerase test "$DEVICE"
+    sedutil-cli -n --revertnoerase test "$DEVICE"
 
     echo ""
     echo "=== [DECRYPT] Step 3: Verifying unlock status ==="
