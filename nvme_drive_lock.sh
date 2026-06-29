@@ -129,7 +129,7 @@ secure_erase_drive() {
 
     echo ""
     echo "=== [SECURE ERASE] Erasing locking range on $DEVICE ==="
-    sedutil-cli --revertTPer test "$DEVICE"
+    sedutil-cli -n --revertTPer test "$DEVICE"
     echo "SUCCESS: Locking range erased on $DEVICE"
 }
 
