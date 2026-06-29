@@ -34,7 +34,7 @@ encrypt_drive() {
 
     echo "Using password: test"
 
-    CURRENT=$(sedutil-cli -n --query "$DEVICE" 2>/dev/null)
+    CURRENT=$(sedutil-cli -n --query "$DEVICE" 2>/dev/null | tr -d '\0')
     LOCK_ENABLED=$(echo "$CURRENT" | grep -oP "(?<=LockingEnabled = )\w" || true)
 
     if [[ "$LOCK_ENABLED" != "Y" ]]; then
@@ -59,7 +59,7 @@ encrypt_drive() {
 
     echo ""
     echo "=== [ENCRYPT] Step 4: Verifying lock status ==="
-    QUERY_OUTPUT=$(sedutil-cli -n --query "$DEVICE")
+    QUERY_OUTPUT=$(sedutil-cli -n --query "$DEVICE" | tr -d '\0')
     echo "$QUERY_OUTPUT"
 
     LOCKED=$(echo "$QUERY_OUTPUT" | grep -oP "(?<=Locked = )\w" || true)
@@ -96,7 +96,7 @@ decrypt_drive() {
 
     echo ""
     echo "=== [DECRYPT] Step 3: Verifying unlock status ==="
-    QUERY_OUTPUT=$(sedutil-cli -n --query "$DEVICE")
+    QUERY_OUTPUT=$(sedutil-cli -n --query "$DEVICE" | tr -d '\0')
     echo "$QUERY_OUTPUT"
 
     LOCKED=$(echo "$QUERY_OUTPUT" | grep -oP "(?<=Locked = )\w" || true)
@@ -142,7 +142,7 @@ show_status() {
     local DEVICE="$1"
     echo ""
     echo "=== [STATUS] Lock status for $DEVICE ==="
-    QUERY_OUTPUT=$(sedutil-cli -n --query "$DEVICE" 2>/dev/null)
+    QUERY_OUTPUT=$(sedutil-cli -n --query "$DEVICE" 2>/dev/null | tr -d '\0')
 
     LOCKED=$(echo "$QUERY_OUTPUT" | grep -oP "(?<=Locked = )\w" || true)
     LOCK_ENABLED=$(echo "$QUERY_OUTPUT" | grep -oP "(?<=LockingEnabled = )\w" || true)
