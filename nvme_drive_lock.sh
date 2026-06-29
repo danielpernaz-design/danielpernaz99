@@ -5,6 +5,8 @@ set -e
 usage() {
     echo "Usage: $0 --encrypt /dev/sgX | --decrypt /dev/sgX | --msid /dev/sgX | --secure-erase /dev/sgX | --all /dev/sgX"
     echo ""
+    echo "  NOTE: This script uses 'test' as the drive password for all operations."
+    echo ""
     echo "  --encrypt /dev/sgX      Lock the drive"
     echo "  --decrypt /dev/sgX      Unlock the drive"
     echo "  --msid /dev/sgX         Print the MSID (default password) of the drive"
