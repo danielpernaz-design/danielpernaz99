@@ -32,7 +32,7 @@ encrypt_drive() {
         exit 1
     fi
 
-    echo "Using MSID: $MSID"
+    echo "Using password: test"
 
     CURRENT=$(sedutil-cli -n --query "$DEVICE" 2>/dev/null)
     LOCK_ENABLED=$(echo "$CURRENT" | grep -oP "(?<=LockingEnabled = )\w" || true)
@@ -83,7 +83,7 @@ decrypt_drive() {
         exit 1
     fi
 
-    echo "Using MSID: $MSID"
+    echo "Using password: test"
 
     echo ""
     echo "=== [DECRYPT] Step 1: Set locking range to RW ==="
@@ -120,7 +120,7 @@ secure_erase_drive() {
         exit 1
     fi
 
-    echo "Using MSID: $MSID"
+    echo "Using password: test"
 
     if [[ "$BATCH" != "--batch" ]]; then
         echo ""
