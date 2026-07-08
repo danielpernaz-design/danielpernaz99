@@ -2,11 +2,14 @@
 #
 # Celestica Nebula JBOF ESM firmware downgrade/upgrade cycle test.
 #
-# Each cycle: downgrade both ESMs to 3.2.0.18 (3002), validate, then
-# upgrade both ESMs to 5.2.2.18 (0522), validate. A cycle only proceeds
-# to the next step if ESM count, ESM firmware revision, ESM relative-ID
-# mapping, and NVMe drive count all match expectations. Any mismatch
-# stops the test immediately with diagnostic output.
+# Each cycle: downgrade to 3.2.0.18 (3002), then upgrade to 5.2.2.18
+# (0522). Within each phase, ESMs are processed one at a time in
+# relative-ES-process-ID order (id 1 = ESM-A first, then id 2 = ESM-B,
+# etc.) — an ESM is fully flashed, reset, and re-validated before the
+# next one is touched. A cycle only proceeds if ESM count, each ESM's
+# firmware revision, the ESM relative-ID mapping, and NVMe drive count
+# all match expectations at every step. Any mismatch stops the test
+# immediately with diagnostic output.
 
 set -uo pipefail
 
@@ -15,12 +18,14 @@ UPGRADE_FW_DEFAULT="se4200_ses_5.2.2.18-cls.fw"
 DOWNGRADE_REV="3002"
 UPGRADE_REV="0522"
 RESET_DIAG_BYTES="10,00,00,09,00,01,72,65,73,65,74,20,31"
-POST_RESET_SLEEP=40
+POST_RESET_SLEEP=60
 MICROCODE_BPW=3072
 
 DOWNGRADE_FW="$DOWNGRADE_FW_DEFAULT"
 UPGRADE_FW="$UPGRADE_FW_DEFAULT"
 ITERATIONS=""
+
+declare -A REV_BY_ID
 
 usage() {
     echo "Usage: $0 [-n ITERATIONS] [-d DOWNGRADE_FW_FILE] [-u UPGRADE_FW_FILE]"
@@ -49,6 +54,14 @@ log() {
 
 fail() {
     echo "FAIL: $*"
+}
+
+esm_label() {
+    case "$1" in
+        1) echo "ESM-A" ;;
+        2) echo "ESM-B" ;;
+        *) echo "ESM-$1" ;;
+    esac
 }
 
 for tool in lsscsi sg_ses sg_ses_microcode sg_senddiag; do
@@ -103,13 +116,23 @@ get_nvme_count() {
     lsscsi -g 2>/dev/null | grep -ic nvme
 }
 
-# Refreshes state and checks it against expectations. Prints a full
-# snapshot plus any FAIL lines. Returns 1 on any mismatch.
-# Args: expected_count expected_rev(optional, empty = skip) expected_nvme phase_label
-validate_snapshot() {
-    local expected_count="$1" expected_rev="$2" expected_nvme="$3" phase="$4"
-    local ok=1
+# Prints indices into ESM_DEVICES/ESM_IDS, one per line, sorted by
+# ascending relative ES process ID (missing/unparsed ids sort last).
+order_by_relative_id() {
     local i
+    for i in "${!ESM_DEVICES[@]}"; do
+        printf '%s %s\n' "${ESM_IDS[$i]:-999}" "$i"
+    done | sort -n -k1,1 | awk '{print $2}'
+}
+
+# Refreshes state and checks each ESM's firmware revision against
+# REV_BY_ID[relative_id], plus overall ESM count / ID-set sanity / NVMe
+# count. Prints a full snapshot plus any FAIL lines. Returns 1 on any
+# mismatch. Args: expected_count expected_nvme phase_label
+validate_snapshot() {
+    local expected_count="$1" expected_nvme="$2" phase="$3"
+    local ok=1
+    local i id expected_rev
 
     refresh_esm_list
     refresh_esm_ids
@@ -120,7 +143,8 @@ validate_snapshot() {
     echo "---- Validation: $phase ----"
     echo "ESM devices found: $ESM_COUNT (expected: $expected_count)"
     for i in "${!ESM_DEVICES[@]}"; do
-        echo "  ${ESM_DEVICES[$i]}: fw_rev=${ESM_REVS[$i]:-?} relative_id=${ESM_IDS[$i]:-?}/${ESM_NPROC[$i]:-?}"
+        id="${ESM_IDS[$i]:-}"
+        echo "  ${ESM_DEVICES[$i]} ($(esm_label "${id:-?}")): fw_rev=${ESM_REVS[$i]:-?} relative_id=${id:-?}/${ESM_NPROC[$i]:-?}"
     done
     echo "NVMe drive count: $nvme_count (expected: $expected_nvme)"
 
@@ -130,12 +154,14 @@ validate_snapshot() {
     fi
 
     for i in "${!ESM_DEVICES[@]}"; do
+        id="${ESM_IDS[$i]:-}"
+        expected_rev="${REV_BY_ID[$id]:-}"
         if [[ -n "$expected_rev" && "${ESM_REVS[$i]:-}" != "$expected_rev" ]]; then
-            fail "${ESM_DEVICES[$i]} firmware revision is ${ESM_REVS[$i]:-?}, expected $expected_rev"
+            fail "${ESM_DEVICES[$i]} ($(esm_label "${id:-?}")) firmware revision is ${ESM_REVS[$i]:-?}, expected $expected_rev"
             ok=0
         fi
-        if [[ -z "${ESM_IDS[$i]:-}" || "${ESM_NPROC[$i]:-0}" -ne "$expected_count" ]]; then
-            fail "${ESM_DEVICES[$i]} reports unexpected ES process info (id=${ESM_IDS[$i]:-?}, total=${ESM_NPROC[$i]:-?}, expected total=$expected_count)"
+        if [[ -z "$id" || "${ESM_NPROC[$i]:-0}" -ne "$expected_count" ]]; then
+            fail "${ESM_DEVICES[$i]} reports unexpected ES process info (id=${id:-?}, total=${ESM_NPROC[$i]:-?}, expected total=$expected_count)"
             ok=0
         fi
     done
@@ -156,34 +182,58 @@ validate_snapshot() {
     [[ "$ok" -eq 1 ]]
 }
 
-# Args: fw_file label
-perform_fw_update() {
-    local fw_file="$1" label="$2" dev
+# Flashes + resets a single ESM device. Args: dev fw_file label
+perform_fw_update_one() {
+    local dev="$1" fw_file="$2" label="$3"
 
-    refresh_esm_list
-    if [[ "$ESM_COUNT" -eq 0 ]]; then
-        fail "no ESM devices found before applying firmware ($label)"
+    log "Applying firmware to $label ($dev) using $fw_file"
+    if ! sg_ses_microcode -m 0xe -b "$MICROCODE_BPW" -I "$fw_file" "$dev"; then
+        fail "sg_ses_microcode failed on $label ($dev)"
         return 1
     fi
 
-    for dev in "${ESM_DEVICES[@]}"; do
-        log "Applying firmware ($label) to $dev using $fw_file"
-        if ! sg_ses_microcode -m 0xe -b "$MICROCODE_BPW" -I "$fw_file" "$dev"; then
-            fail "sg_ses_microcode failed on $dev"
-            return 1
-        fi
-    done
+    log "Sending OEM chip reset to $label ($dev)"
+    if ! sg_senddiag --pf -r "$RESET_DIAG_BYTES" "$dev" -vv; then
+        fail "sg_senddiag reset failed on $label ($dev)"
+        return 1
+    fi
 
-    for dev in "${ESM_DEVICES[@]}"; do
-        log "Sending OEM chip reset to $dev"
-        if ! sg_senddiag --pf -r "$RESET_DIAG_BYTES" "$dev" -vv; then
-            fail "sg_senddiag reset failed on $dev"
-            return 1
-        fi
-    done
-
-    log "Sleeping ${POST_RESET_SLEEP}s for ESMs to come back online..."
+    log "Sleeping ${POST_RESET_SLEEP}s for $label to come back online..."
     sleep "$POST_RESET_SLEEP"
+    return 0
+}
+
+# Processes every ESM sequentially (ESM-A, then ESM-B, ...), validating
+# after each one before moving to the next.
+# Args: fw_file target_rev expected_count expected_nvme phase_name
+run_phase() {
+    local fw_file="$1" target_rev="$2" expected_count="$3" expected_nvme="$4" phase_name="$5"
+    local idx id dev label
+
+    refresh_esm_list
+    refresh_esm_ids
+
+    for idx in $(order_by_relative_id); do
+        dev="${ESM_DEVICES[$idx]}"
+        id="${ESM_IDS[$idx]:-}"
+        label="$(esm_label "${id:-?}")"
+
+        echo ""
+        log "----- $phase_name: $label (relative id ${id:-?}, $dev) -----"
+        if ! perform_fw_update_one "$dev" "$fw_file" "$label"; then
+            return 1
+        fi
+
+        if [[ -n "$id" ]]; then
+            REV_BY_ID[$id]="$target_rev"
+        fi
+
+        if ! validate_snapshot "$expected_count" "$expected_nvme" "$phase_name - after $label"; then
+            return 1
+        fi
+        log "$phase_name: $label validated OK."
+    done
+
     return 0
 }
 
@@ -193,10 +243,16 @@ if [[ "$ESM_COUNT" -eq 0 ]]; then
     echo "Error: no ESM devices found (lsscsi -g | egrep 'R3023|SE4200' returned nothing)."
     exit 1
 fi
+refresh_esm_ids
 BASELINE_COUNT="$ESM_COUNT"
 BASELINE_NVME="$(get_nvme_count)"
 
-if ! validate_snapshot "$BASELINE_COUNT" "" "$BASELINE_NVME" "baseline"; then
+for i in "${!ESM_IDS[@]}"; do
+    id="${ESM_IDS[$i]:-}"
+    [[ -n "$id" ]] && REV_BY_ID[$id]="${ESM_REVS[$i]:-}"
+done
+
+if ! validate_snapshot "$BASELINE_COUNT" "$BASELINE_NVME" "baseline"; then
     echo "Stopping: baseline state is inconsistent (ESM IDs/count not sane). Fix before testing."
     exit 1
 fi
@@ -208,26 +264,18 @@ log "Upgrade firmware:   $UPGRADE_FW (-> $UPGRADE_REV)"
 
 for ((cycle = 1; cycle <= ITERATIONS; cycle++)); do
     log "===== Cycle $cycle/$ITERATIONS: DOWNGRADE to $DOWNGRADE_REV ====="
-    if ! perform_fw_update "$DOWNGRADE_FW" "downgrade to $DOWNGRADE_REV"; then
-        echo "Stopping at cycle $cycle during downgrade firmware apply."
+    if ! run_phase "$DOWNGRADE_FW" "$DOWNGRADE_REV" "$BASELINE_COUNT" "$BASELINE_NVME" "cycle $cycle downgrade"; then
+        echo "Stopping at cycle $cycle during downgrade."
         exit 1
     fi
-    if ! validate_snapshot "$BASELINE_COUNT" "$DOWNGRADE_REV" "$BASELINE_NVME" "cycle $cycle downgrade"; then
-        echo "Stopping at cycle $cycle: post-downgrade validation failed."
-        exit 1
-    fi
-    log "Cycle $cycle downgrade validated OK."
+    log "Cycle $cycle downgrade complete: all ESMs at $DOWNGRADE_REV."
 
     log "===== Cycle $cycle/$ITERATIONS: UPGRADE to $UPGRADE_REV ====="
-    if ! perform_fw_update "$UPGRADE_FW" "upgrade to $UPGRADE_REV"; then
-        echo "Stopping at cycle $cycle during upgrade firmware apply."
+    if ! run_phase "$UPGRADE_FW" "$UPGRADE_REV" "$BASELINE_COUNT" "$BASELINE_NVME" "cycle $cycle upgrade"; then
+        echo "Stopping at cycle $cycle during upgrade."
         exit 1
     fi
-    if ! validate_snapshot "$BASELINE_COUNT" "$UPGRADE_REV" "$BASELINE_NVME" "cycle $cycle upgrade"; then
-        echo "Stopping at cycle $cycle: post-upgrade validation failed."
-        exit 1
-    fi
-    log "Cycle $cycle upgrade validated OK."
+    log "Cycle $cycle upgrade complete: all ESMs at $UPGRADE_REV."
 
     log "Cycle $cycle/$ITERATIONS completed successfully."
 done
