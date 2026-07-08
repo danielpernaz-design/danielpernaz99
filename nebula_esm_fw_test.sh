@@ -16,6 +16,7 @@ DOWNGRADE_REV="3002"
 UPGRADE_REV="0522"
 RESET_DIAG_BYTES="10,00,00,09,00,01,72,65,73,65,74,20,31"
 POST_RESET_SLEEP=40
+MICROCODE_BPW=3072
 
 DOWNGRADE_FW="$DOWNGRADE_FW_DEFAULT"
 UPGRADE_FW="$UPGRADE_FW_DEFAULT"
@@ -167,7 +168,7 @@ perform_fw_update() {
 
     for dev in "${ESM_DEVICES[@]}"; do
         log "Applying firmware ($label) to $dev using $fw_file"
-        if ! sg_ses_microcode -m 0xe -f "$fw_file" "$dev"; then
+        if ! sg_ses_microcode -m 0xe -b "$MICROCODE_BPW" -I "$fw_file" "$dev"; then
             fail "sg_ses_microcode failed on $dev"
             return 1
         fi
