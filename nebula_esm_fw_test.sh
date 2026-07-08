@@ -23,6 +23,8 @@ MICROCODE_BPW=3072
 SG_SES_TIMEOUT=15
 MICROCODE_TIMEOUT=180
 RESET_TIMEOUT=60
+RESCAN_RETRY_SLEEP=20
+RESCAN_TIMEOUT=90
 
 DOWNGRADE_FW="$DOWNGRADE_FW_DEFAULT"
 UPGRADE_FW="$UPGRADE_FW_DEFAULT"
@@ -165,7 +167,8 @@ validate_snapshot() {
 
     for i in "${!ESM_DEVICES[@]}"; do
         id="${ESM_IDS[$i]:-}"
-        expected_rev="${REV_BY_ID[$id]:-}"
+        expected_rev=""
+        [[ -n "$id" ]] && expected_rev="${REV_BY_ID[$id]:-}"
         if [[ -n "$expected_rev" && "${ESM_REVS[$i]:-}" != "$expected_rev" ]]; then
             fail "${ESM_DEVICES[$i]} ($(esm_label "${id:-?}")) firmware revision is ${ESM_REVS[$i]:-?}, expected $expected_rev"
             ok=0
@@ -249,9 +252,24 @@ run_phase() {
         fi
 
         if ! validate_snapshot "$expected_count" "$expected_nvme" "$phase_name - after $label"; then
-            return 1
+            if [[ "$target_rev" == "$DOWNGRADE_REV" ]]; then
+                log "Downgrade validation failed for $label; waiting ${RESCAN_RETRY_SLEEP}s and forcing a SCSI rescan before giving up..."
+                sleep "$RESCAN_RETRY_SLEEP"
+                if command -v scsi-rescan >/dev/null 2>&1; then
+                    timeout "$RESCAN_TIMEOUT" scsi-rescan --forcerescan
+                else
+                    log "WARNING: scsi-rescan not found in PATH; re-checking without a forced rescan."
+                fi
+                if ! validate_snapshot "$expected_count" "$expected_nvme" "$phase_name - after $label (post-rescan retry)"; then
+                    return 1
+                fi
+                log "$phase_name: $label validated OK after rescan retry."
+            else
+                return 1
+            fi
+        else
+            log "$phase_name: $label validated OK."
         fi
-        log "$phase_name: $label validated OK."
     done
 
     return 0
