@@ -20,6 +20,9 @@ UPGRADE_REV="0522"
 RESET_DIAG_BYTES="10,00,00,09,00,01,72,65,73,65,74,20,31"
 POST_RESET_SLEEP=60
 MICROCODE_BPW=3072
+SG_SES_TIMEOUT=15
+MICROCODE_TIMEOUT=180
+RESET_TIMEOUT=60
 
 DOWNGRADE_FW="$DOWNGRADE_FW_DEFAULT"
 UPGRADE_FW="$UPGRADE_FW_DEFAULT"
@@ -64,7 +67,7 @@ esm_label() {
     esac
 }
 
-for tool in lsscsi sg_ses sg_ses_microcode sg_senddiag; do
+for tool in lsscsi sg_ses sg_ses_microcode sg_senddiag timeout; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "Error: required tool '$tool' not found in PATH."
         exit 1
@@ -103,10 +106,17 @@ refresh_esm_list() {
 refresh_esm_ids() {
     ESM_IDS=()
     ESM_NPROC=()
-    local i dev out
+    local i dev out rc
     for i in "${!ESM_DEVICES[@]}"; do
         dev="${ESM_DEVICES[$i]}"
-        out=$(sg_ses -p 1 "$dev" 2>/dev/null | grep -i 'relative ES process id')
+        out=$(timeout "$SG_SES_TIMEOUT" sg_ses -p 1 "$dev" 2>&1)
+        rc=$?
+        if [[ $rc -eq 124 ]]; then
+            fail "sg_ses -p 1 $dev timed out after ${SG_SES_TIMEOUT}s (device unresponsive)"
+        elif [[ $rc -ne 0 ]]; then
+            fail "sg_ses -p 1 $dev exited with status $rc"
+        fi
+        out=$(grep -i 'relative ES process id' <<<"$out")
         ESM_IDS+=("$(grep -oP 'relative ES process id:\s*\K[0-9]+' <<<"$out")")
         ESM_NPROC+=("$(grep -oP 'number of ES processes:\s*\K[0-9]+' <<<"$out")")
     done
@@ -187,14 +197,24 @@ perform_fw_update_one() {
     local dev="$1" fw_file="$2" label="$3"
 
     log "Applying firmware to $label ($dev) using $fw_file"
-    if ! sg_ses_microcode -m 0xe -b "$MICROCODE_BPW" -I "$fw_file" "$dev"; then
-        fail "sg_ses_microcode failed on $label ($dev)"
+    if ! timeout "$MICROCODE_TIMEOUT" sg_ses_microcode -m 0xe -b "$MICROCODE_BPW" -I "$fw_file" "$dev"; then
+        rc=$?
+        if [[ $rc -eq 124 ]]; then
+            fail "sg_ses_microcode timed out after ${MICROCODE_TIMEOUT}s on $label ($dev)"
+        else
+            fail "sg_ses_microcode failed on $label ($dev)"
+        fi
         return 1
     fi
 
     log "Sending OEM chip reset to $label ($dev)"
-    if ! sg_senddiag --pf -r "$RESET_DIAG_BYTES" "$dev" -vv; then
-        fail "sg_senddiag reset failed on $label ($dev)"
+    if ! timeout "$RESET_TIMEOUT" sg_senddiag --pf -r "$RESET_DIAG_BYTES" "$dev" -vv; then
+        rc=$?
+        if [[ $rc -eq 124 ]]; then
+            fail "sg_senddiag reset timed out after ${RESET_TIMEOUT}s on $label ($dev)"
+        else
+            fail "sg_senddiag reset failed on $label ($dev)"
+        fi
         return 1
     fi
 
