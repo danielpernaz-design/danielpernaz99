@@ -167,7 +167,7 @@ perform_fw_update() {
 
     for dev in "${ESM_DEVICES[@]}"; do
         log "Applying firmware ($label) to $dev using $fw_file"
-        if ! sg_ses_microcode -m 0xe -b "$fw_file" "$dev"; then
+        if ! sg_ses_microcode -m 0xe -f "$fw_file" "$dev"; then
             fail "sg_ses_microcode failed on $dev"
             return 1
         fi
