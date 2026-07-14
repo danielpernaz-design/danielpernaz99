@@ -64,6 +64,7 @@ def serial_login():
     buffer = ""
     login_seen = False
     password_sent = False
+    quiet_reads = 0
     detect_deadline = time.time() + LOGIN_DETECT_TIMEOUT
     login_deadline = time.time() + LOGIN_TIMEOUT
 
@@ -72,8 +73,17 @@ def serial_login():
         if not chunk:
             if not login_seen:
                 ser.write(b'\r')
+                continue
+            if password_sent:
+                quiet_reads += 1
+                # The line went quiet after the password with no new
+                # prompt and no error - the CLI accepted it.
+                if quiet_reads >= 2:
+                    logger.info(f"{GREEN}Serial login successful.{RESET}")
+                    return
             continue
 
+        quiet_reads = 0
         buffer += chunk
         lowered = buffer.lower()
 
@@ -111,12 +121,6 @@ def serial_login():
                 ser.write(f"{active_password}\r".encode("ascii"))
             password_sent = True
             buffer = ""
-
-        elif password_sent and "password" not in lowered and "login" not in lowered:
-            # Output after the password that is not another prompt or an
-            # error means the CLI accepted it.
-            logger.info(f"{GREEN}Serial login successful.{RESET}")
-            return
 
         elif not login_seen and ("ESM" in buffer or last_line.endswith((">", "#"))):
             # Regular CLI prompt without any login - old SES version.
