@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
 
-import time
-import serial
-import logging
+import os
 import sys
-from prompt_toolkit.shortcuts import button_dialog
+import time
+import shutil
+import logging
+
+try:
+    import serial
+    from prompt_toolkit.shortcuts import button_dialog
+except ModuleNotFoundError:
+    # pyserial / prompt_toolkit may only be installed for python3.9 on
+    # the MFG stations - re-run under it if this interpreter lacks them.
+    _alt = shutil.which("python3.9")
+    if _alt and os.path.realpath(_alt) != os.path.realpath(sys.executable):
+        os.execv(_alt, [_alt] + sys.argv)
+    raise
 
 RESET = "\033[0m"
 RED = "\033[31m"
