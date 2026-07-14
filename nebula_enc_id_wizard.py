@@ -85,33 +85,42 @@ def serial_login():
             if not login_seen:
                 ser.write(b'\r')
                 continue
+            quiet_reads += 1
             if password_sent:
-                quiet_reads += 1
                 # The line went quiet after the password with no new
                 # prompt and no error - the CLI accepted it.
                 if quiet_reads >= 2:
                     logger.info(f"{GREEN}Serial login successful.{RESET}")
                     return
+            elif quiet_reads >= 3:
+                # Stuck mid-login with nothing arriving - nudge the CLI
+                # so it shows its current prompt again.
+                ser.write(b'\r')
+                quiet_reads = 0
             continue
 
         quiet_reads = 0
         buffer += chunk
-        lowered = buffer.lower()
+        chunk_l = chunk.lower()
 
-        if login_seen and ("incorrect" in lowered or "invalid" in lowered
-                           or "denied" in lowered or "failed" in lowered):
-            # Wrong password - switch to the other known one and wait for
-            # the CLI to show the "Login:" prompt again.
+        if password_sent and ("incorrect" in chunk_l or "invalid" in chunk_l
+                              or "denied" in chunk_l or "failed" in chunk_l):
+            # Wrong password - switch to the other known one. Do not
+            # discard the chunk: it usually already carries the next
+            # "Login:" prompt, which is handled right below.
             logger.warning(f"{YELLOW}Login failed, retrying with the other known password...{RESET}")
             active_password = NEW_PASSWORD if active_password == DEFAULT_PASSWORD else DEFAULT_PASSWORD
             password_sent = False
-            buffer = ""
-            continue
 
         tail = buffer.rstrip()
         last_line = tail.splitlines()[-1] if tail else ""
 
         if last_line.endswith("Login:"):
+            if password_sent:
+                # Login prompt again right after a password means it was
+                # rejected even if no error text was recognized.
+                logger.warning(f"{YELLOW}Password rejected, retrying with the other known password...{RESET}")
+                active_password = NEW_PASSWORD if active_password == DEFAULT_PASSWORD else DEFAULT_PASSWORD
             login_seen = True
             password_sent = False
             login_deadline = time.time() + LOGIN_TIMEOUT
